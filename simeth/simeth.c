@@ -48,6 +48,16 @@ MODULE_DESCRIPTION ("SIMulated ETHernet driver using IVSHMEM on VM \
 MODULE_LICENSE ("GPL");
 MODULE_VERSION (SIMETH_VERSION);
 
+typedef struct simeth_drv {
+	struct net_device   *netdev;
+	struct pci_dev      *pci_dev;
+
+	uint32_t            n_txqs;
+	uint32_t            n_rxqs;
+	simeth_q_t          *tx_q;
+	simeth_q_t          *rx_q;
+} simeth_drv_t;
+
 static int __init simeth_init_module (void)
 {
 	int ret = 0;
