@@ -1,13 +1,15 @@
 
 CC=gcc
 
-all: bsimeth bsimnic
+.PHONY: simeth simnic
 
-bsimeth:
+all: simeth simnic
+
+simeth:
 	${MAKE} -C simeth all
 
-bsimnic:
-	${MAKE} -C simnic all
+simnic:
+	${MAKE} -C simeth_nic all
 
 clean: clean_simeth clean_simnic
 
@@ -15,5 +17,5 @@ clean_simeth:
 	${MAKE} -C simeth clean
 
 clean_simnic:
-	${MAKE} -C simnic clean
+	${MAKE} -C simeth_nic clean
 

@@ -3,7 +3,7 @@ CFLAGS = -Wall
 CFLAGS += -I../include
 CFLAGS += -g
 
-SRC_FILES=simnic.c
+SRC_FILES=simeth_nic.c
 
 all:
 	${CC} ${CFLAGS} -o simnic ${SRC_FILES}
