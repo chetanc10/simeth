@@ -5,7 +5,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 
-#include "simnic_regs.h"
+#include "simeth_nic.h"
 
 int main (int argc, char **argv)
 {

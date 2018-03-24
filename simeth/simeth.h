@@ -6,10 +6,16 @@
 #include <linux/list.h>
 #include <linux/u64_stats_sync.h>
 
-#include "simnic.h"
+#include "simeth_nic.h"
 
 /* simeth driver version */
 #define SIMETH_VERSION "0.1"
+
+/* If a real xmit is going to happen, this shall be 1, else 0 (dummy) */
+#define XMIT_IS_REAL 0
+
+/* NAPI Poll weight */
+#define SIMETH_NAPI_WEIGHT 1
 
 typedef struct simeth_stats {
 	uint64_t packets;
@@ -65,8 +71,8 @@ typedef simeth_q_t simeth_txq_t;
 typedef simeth_q_t simeth_rxq_t;
 
 /* Main structure containing simeth driver context */
-typedef struct simeth_drv {
-	struct simeth_pcps_t cpstats;
+typedef struct simeth_priv {
+	simeth_pcps_t       cpstats;
 	struct napi_struct  napi;
 	struct net_device   *netdev;
 	struct pci_dev      *pci_dev;
@@ -80,7 +86,8 @@ typedef struct simeth_drv {
 	/*simeth_stats_t      drv_rx_stats;*/
 
 	int                 mode;
-} simeth_drv_t;
+	void                *ioaddr; /*used for BAR access for nic dma ctrl*/
+} simeth_priv_t;
 
 #endif /*__SIMETH_H*/
 

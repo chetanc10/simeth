@@ -44,7 +44,7 @@
 #include <net/tc_act/tc_mirred.h>
 
 #include "simeth.h"
-#include "simnic_regs.h"
+#include "simeth_nic.h"
 
 MODULE_AUTHOR ("ChetaN KS <chetan.kumar@gmail.com>");
 MODULE_DESCRIPTION ("SIMulated ETHernet driver using IVSHMEM on VM \
@@ -70,19 +70,127 @@ static struct pci_device_id simeth_dev_ids[] = {
 static void simeth_remove (struct pci_dev *pci_dev)
 {
 	struct net_device *ndev = pci_get_drvdata (pci_dev);
-	simeth_drv_t *simeth_drv = netdev_priv (ndev);
+	simeth_priv_t *simeth_priv = netdev_priv (ndev);
 
-	printk ("Removing simeth\n");
+	pr_info ("Removing simeth\n");
 
-	netif_napi_del (&simeth_drv->napi);
+	netif_napi_del (&simeth_priv->napi);
     unregister_netdev (ndev);
     free_netdev (ndev);
 
-	iounmap (simeth_drv->ioaddr);
+	iounmap (simeth_priv->ioaddr);
 	pci_release_regions (pci_dev);
 	pci_clear_master (pci_dev);
 	pci_disable_device (pci_dev);
 }
+
+static int simeth_poll (struct napi_struct *napi, int budget)
+{
+	int ret = 0;
+
+	pr_info ("simeth_poll\n");
+	return ret;
+}
+
+static int simeth_ndo_open (struct net_device	*ndev)
+{
+	struct simeth_priv *simeth_priv = netdev_priv (ndev);
+	pr_info (" simeth_ndo_open\n");
+	napi_enable (&simeth_priv->napi);
+    return 0;
+}
+
+static int simeth_ndo_stop (struct net_device *ndev)
+{
+	int ret = 0;
+	struct simeth_priv *simeth_priv = netdev_priv (ndev);
+	pr_info (" simeth_ndo_stop\n");
+	napi_disable (&simeth_priv->napi);
+    return ret;
+}
+
+static netdev_tx_t simeth_ndo_start_xmit (struct sk_buff *skb, struct net_device *ndev)
+{
+	int ret = 0, txst = 0;
+	struct simeth_pcpustats *cpstats =
+		&((struct simeth_priv *)netdev_priv (ndev))->cpstats;
+
+    if (!skb) return (netdev_tx_t)0;
+
+#if XMIT_IS_REAL
+	if (simeth_xmit_mac_fn) {
+		ret = simeth_xmit_mac_fn (skb);
+		if (ret < 0) {/*check for -1/-2,etc err cases*/
+			pr_err ("in simeth_xmit_mac, ret: %d\n", ret);
+			txst = ret;
+			ret = NETDEV_TX_BUSY;
+		}
+	}
+#endif
+
+	/* We may have to see if we need a work-scheduling/sync
+	 * In case we do, lot of changes follow this line -TODO */
+	if (!ret) { /* tx success */
+		cpstats->tx_stats.packets += 1;
+		cpstats->tx_stats.bytes += skb->len;
+	} else { /* tx failed */
+		switch (txst) {
+			case -1: cpstats->tx_stats.dropped += 1; break;
+			case -2: cpstats->tx_stats.errors += 1; break;
+			default: pr_err ("in simeth_xmit_mac.. txst: %d\n", txst); break;
+		}
+	}
+
+	dev_kfree_skb (skb);
+
+    return ret;
+}
+
+static struct rtnl_link_stats64 *simeth_ndo_get_stats64 (struct net_device *ndev, struct rtnl_link_stats64 *showstats)
+{
+	uint32_t start;
+	struct simeth_priv *simeth_priv = netdev_priv (ndev);
+
+	pr_info ("simeth_get_stats64\n");
+
+	do {
+		start = u64_stats_fetch_begin_irq (&simeth_priv->cpstats.rx_stats.syncp);
+		showstats->rx_packets = simeth_priv->cpstats.rx_stats.packets;
+		showstats->rx_bytes = simeth_priv->cpstats.rx_stats.bytes;
+	} while (u64_stats_fetch_retry_irq (&simeth_priv->cpstats.rx_stats.syncp, start));
+
+	do {
+		start = u64_stats_fetch_begin_irq (&simeth_priv->cpstats.tx_stats.syncp);
+		showstats->tx_packets = simeth_priv->cpstats.tx_stats.packets;
+		showstats->tx_bytes = simeth_priv->cpstats.tx_stats.bytes;
+	} while (u64_stats_fetch_retry_irq(&simeth_priv->cpstats.tx_stats.syncp, start));
+
+	showstats->rx_dropped   = ndev->stats.rx_dropped;
+	showstats->tx_dropped   = ndev->stats.tx_dropped;
+	showstats->rx_length_errors = ndev->stats.rx_length_errors;
+	showstats->rx_errors    = ndev->stats.rx_errors;
+	showstats->rx_crc_errors    = ndev->stats.rx_crc_errors;
+	showstats->rx_fifo_errors   = ndev->stats.rx_fifo_errors;
+	showstats->rx_missed_errors = ndev->stats.rx_missed_errors;
+
+	return showstats;
+}
+
+static const struct net_device_ops simeth_netdev_ops = {
+	.ndo_open = simeth_ndo_open,
+	.ndo_stop = simeth_ndo_stop,
+	.ndo_get_stats64 = simeth_ndo_get_stats64,
+	.ndo_start_xmit = simeth_ndo_start_xmit,
+	/*.ndo_tx_timeout = simeth_ndo_tx_timeout,*/
+	/*.ndo_validate_addr = simeth_ndo_validate_addr,*/
+	/*.ndo_change_mtu = simeth_ndo_change_mtu,*/
+	/*.ndo_set_mac_address = simeth_ndo_set_mac_address,*/
+	/*.ndo_do_ioctl = simeth_ndo_do_ioctl,*/
+	/*.ndo_set_rx_mode = simeth_ndo_set_rx_mode,*/
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	/*.ndo_poll_controller = simeth_ndo_poll_controller,*/
+#endif
+};
 
 static uint8_t _dummy_simeth_mac[] = {0x34, 0x23, 0x87, 0xdf, 0x49, 0xd2};
 static inline uint8_t simeth_mac_byte (int i)
@@ -97,62 +205,51 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 	int ret = 0;
 	int i = 0;
 	struct net_device *ndev = NULL;
-	simeth_drv_t *simeth_drv;
+	simeth_priv_t *simeth_priv;
 	void __iomem *ioaddr;
 
-	printk ("Probing simeth\n");
+	pr_info ("Probing simeth\n");
 
-    ndev = alloc_etherdev (sizeof (struct cnet_pcpustats));
+    ndev = alloc_etherdev (sizeof (*simeth_priv));
     if (!ndev) {
-        printk ("Failed alloc-ether-cnet-dev\n");
+        pr_err ("Failed alloc-ether-simeth-dev\n");
         return -ENOMEM;
     }
 
 	SET_NETDEV_DEV (ndev, &pci_dev->dev);
-	ndev->netdev_ops = &cnet_dev_ops;
-	simeth_drv = netdev_priv (ndev);
-	simeth_drv->ndev = ndev;
+	ndev->netdev_ops = &simeth_netdev_ops;
+	simeth_priv = netdev_priv (ndev);
+	simeth_priv->netdev = ndev;
 
 	/* any more net __inits? -TODO */
 
 	/* PCI setup */
 	ret = pci_enable_device (pci_dev);
 	if (ret < 0) {
-		printk ("ERROR simeth-enable-device\n");
+		pr_err ("ERROR simeth-enable-device, ret: %d\n", ret);
 		goto do_free_netdev;
 	} else {
-		printk ("simeth-dev-irq: %d\n", pci_dev->irq);
+		pr_info ("simeth-dev-irq: %d\n", pci_dev->irq);
 	}
 
 	ret = pci_request_regions (pci_dev, MODULENAME);
 	if (ret < 0) {
-		printk ("ERROR simeth-request-regions\n");
+		pr_err ("simeth-request-regions, ret: %d\n", ret);
 		goto do_napi_del;
 	}
 
 	/* pci-dma-mask-set comes here -TODO */
 
-	for (i = 0; i < 6; i++) {
-		base_addr[i] = pci_resource_start (pci_dev, i);
-		base_len[i] = pci_resource_len (pci_dev, i);
-		if (base_addr[i]) {
-			printk ("bar%d @ %8llx of %8llx(%llu) size\n", \
-				i, base_addr[i], base_len[i], base_len[i]);
-		} else {
-			//break;
-		}
-	}
-
 	/* ioremap here */
 	ioaddr = ioremap(pci_resource_start(pci_dev, 2), \
 			pci_resource_len (pci_dev, 2));
 	if (!ioaddr) {
-		printk ("Error ioremap-simethnet\n");
+		pr_err ("Error ioremap-simethnet\n");
 		ret = -1;
 		goto do_rel_regions;
 	}
 
-	simeth_drv->ioaddr = ioaddr;
+	simeth_priv->ioaddr = ioaddr;
 
 	pci_set_master (pci_dev);
 
@@ -161,14 +258,14 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 		ndev->dev_addr[i] = (unsigned char)simeth_mac_byte (i);
 	}
 
-	netif_napi_add (ndev, &simeth_drv->napi, cnet_poll, CNET_NAPI_WEIGHT);
+	netif_napi_add (ndev, &simeth_priv->napi, simeth_poll, SIMETH_NAPI_WEIGHT);
 
 	ndev->features |= NETIF_F_RXCSUM |
 		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
 
     ret = register_netdev (ndev);
     if (ret < 0) {
-        printk ("Failed register-netdev\n");
+        pr_err ("Failed register-netdev, ret: %d\n", ret);
 		goto do_napi_del;
     }
 
@@ -177,8 +274,8 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 	return 0;
 
 do_napi_del:
-	netif_napi_del (&simeth_drv->napi);
-	iounmap (simeth_drv->ioaddr);
+	netif_napi_del (&simeth_priv->napi);
+	iounmap (simeth_priv->ioaddr);
 do_rel_regions:
 	pci_release_regions (pci_dev);
 /*do_pci_dev_dis:*/

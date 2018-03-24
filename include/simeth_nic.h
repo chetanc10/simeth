@@ -2,6 +2,16 @@
 #ifndef __SIMETH_REGS_H
 #define __SIMETH_REGS_H
 
+#ifdef __KERNEL__
+/*kernel based headers*/
+#include <linux/types.h>
+
+#else
+/*userspace based headers*/
+#include <stdint.h>
+
+#endif /*__KERNEL__*/
+
 /* (S)IM(E)TH 32-bit (R)egister Set */
 
 /*Descriptor Q management registers*/
@@ -19,6 +29,14 @@
 #define SER_DQ_RX_PKT_CNT          0x0000 /*RO - rx packet count on selected Q*/
 #define SER_DQ_RX_ERR_CNT          0x0000 /*RO - rx error count on selected Q*/
 #define SER_DQ_RX_BYTE_CNT         0x0000 /*RO - rx byte count on selected Q*/
+
+/* Descriptor structure */
+typedef struct simeth_desc {
+	uint32_t            buf_pa_hi;
+	uint32_t            buf_pa_lo;
+	uint32_t            opts1; /*len: 0-14, sop: 15, spread: 16-19, rsvd: 20-31*/
+	uint32_t            opts2; /*rsvd*/
+} simeth_desc_t;
 
 #endif /*__SIMETH_REGS_H*/
 
