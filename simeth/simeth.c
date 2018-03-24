@@ -300,13 +300,18 @@ static int __init simeth_init_module (void)
 
 	pr_info ("in %s. Version: %s\n", __func__, SIMETH_VERSION);
 
-	/* TODO - Ain't I mad enough to try create workq yet?*/
+	ret = pci_register_driver (&simeth_drv);
+	if (ret < 0) {
+		printk ("ERROR pcic-drv-registration\n");
+	}
+
 	return ret;
 }
 
 static void __exit simeth_exit_module (void)
 {
-	pr_info ("::%s\n", __func__);
+	pr_info ("%s\n", __func__);
+	pci_unregister_driver (&simeth_drv);
 }
 
 module_init (simeth_init_module);
