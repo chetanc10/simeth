@@ -146,7 +146,7 @@ static netdev_tx_t simeth_ndo_start_xmit (struct sk_buff *skb, struct net_device
     return ret;
 }
 
-static struct rtnl_link_stats64 *simeth_ndo_get_stats64 (struct net_device *ndev, struct rtnl_link_stats64 *showstats)
+static void simeth_ndo_get_stats64 (struct net_device *ndev, struct rtnl_link_stats64 *showstats)
 {
 	uint32_t start;
 	struct simeth_priv *simeth_priv = netdev_priv (ndev);
@@ -172,8 +172,6 @@ static struct rtnl_link_stats64 *simeth_ndo_get_stats64 (struct net_device *ndev
 	showstats->rx_crc_errors    = ndev->stats.rx_crc_errors;
 	showstats->rx_fifo_errors   = ndev->stats.rx_fifo_errors;
 	showstats->rx_missed_errors = ndev->stats.rx_missed_errors;
-
-	return showstats;
 }
 
 static const struct net_device_ops simeth_netdev_ops = {

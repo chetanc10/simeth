@@ -99,7 +99,7 @@ static netdev_tx_t cnet_start_xmit (struct sk_buff *skb, struct net_device *ndev
     return ret;
 }
 
-static struct rtnl_link_stats64 *cnet_get_stats64 (struct net_device *ndev, struct rtnl_link_stats64 *showstats)
+static void cnet_get_stats64 (struct net_device *ndev, struct rtnl_link_stats64 *showstats)
 {
 	uint32_t start;
 	struct cnet_pvt *cpvt = netdev_priv (ndev);
@@ -125,8 +125,6 @@ static struct rtnl_link_stats64 *cnet_get_stats64 (struct net_device *ndev, stru
 	showstats->rx_crc_errors    = ndev->stats.rx_crc_errors;
 	showstats->rx_fifo_errors   = ndev->stats.rx_fifo_errors;
 	showstats->rx_missed_errors = ndev->stats.rx_missed_errors;
-
-	return showstats;
 }
 
 static const struct net_device_ops cnet_dev_ops = {
