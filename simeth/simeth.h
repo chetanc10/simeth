@@ -17,6 +17,13 @@
 /* NAPI Poll weight */
 #define SIMETH_NAPI_WEIGHT 1
 
+/* pci_device_id structure entry macro */
+#define simeth_pci_dev_id(vend, dev, drv_data) \
+{ PCI_DEVICE(vend, dev), .driver_data = drv_data, }
+
+/* Minimum size of the IVSHMEM bar for simeth to function as expected */
+#define SIMETH_BAR_SZ (512 * 1024 * 1024)
+
 typedef struct simeth_stats {
 	uint64_t packets;
 	uint64_t errors;
@@ -86,6 +93,7 @@ typedef struct simeth_priv {
 	/*simeth_stats_t      drv_rx_stats;*/
 
 	int                 mode;
+	int                 msg_enable;
 	void                *ioaddr; /*used for BAR access for nic dma ctrl*/
 } simeth_priv_t;
 

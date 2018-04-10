@@ -53,18 +53,23 @@ MODULE_LICENSE ("GPL");
 MODULE_VERSION (SIMETH_VERSION);
 
 #define MODULENAME "simeth"
+#define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV|NETIF_MSG_PROBE|NETIF_MSG_LINK)
+static int debug = -1;
+module_param (debug, int, 0);
+MODULE_PARM_DESC (debug, "Debug level (0=none,...,16=all)");
 
 typedef enum simeth_dev_region {
-	SIMETH_DR_0 = 0,
-	SIMETH_DR_1 = 1,
-	SIMETH_DR_2 = 2,
-	SIMETH_DR_3 = 3,
-	SIMETH_DR_4 = 4,
-	SIMETH_DR_5 = 5,
+	SIMETH_BAR_0 = 0,
+	SIMETH_BAR_1 = 1,
+	SIMETH_BAR_2 = 2,
+	SIMETH_BAR_3 = 3,
+	SIMETH_BAR_4 = 4,
+	SIMETH_BAR_5 = 5,
 } simeth_dev_region_t;
 
 static struct pci_device_id simeth_dev_ids[] = {
-	{0x1af4, 0x1110, PCI_ANY_ID, PCI_ANY_ID, 0, 0, SIMETH_DR_2},
+	simeth_pci_dev_id (0x1af4, 0x1110, SIMETH_BAR_2),
+	{0,} /* sentinel */
 };
 
 static void simeth_remove (struct pci_dev *pci_dev)
@@ -190,7 +195,7 @@ static const struct net_device_ops simeth_netdev_ops = {
 #endif
 };
 
-static uint8_t _dummy_simeth_mac[] = {0x34, 0x23, 0x87, 0xdf, 0x49, 0xd2};
+static uint8_t _dummy_simeth_mac[] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
 static inline uint8_t simeth_mac_byte (int i)
 {
 	/* TODO - Prep a hw register set to allow read actual MAC
@@ -203,43 +208,43 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 	int ret = 0;
 	int i = 0;
 	struct net_device *ndev = NULL;
-	simeth_priv_t *simeth_priv;
+	simeth_priv_t *simeth_priv = NULL;
+	const unsigned int nic_bar_idx = (unsigned int)(id->driver_data);
 	void __iomem *ioaddr;
 
 	pr_info ("Probing simeth\n");
-
-    ndev = alloc_etherdev (sizeof (*simeth_priv));
-    if (!ndev) {
-        pr_err ("Failed alloc-ether-simeth-dev\n");
-        return -ENOMEM;
-    }
-
-	SET_NETDEV_DEV (ndev, &pci_dev->dev);
-	ndev->netdev_ops = &simeth_netdev_ops;
-	simeth_priv = netdev_priv (ndev);
-	simeth_priv->netdev = ndev;
-
-	/* any more net __inits? -TODO */
 
 	/* PCI setup */
 	ret = pci_enable_device (pci_dev);
 	if (ret < 0) {
 		pr_err ("ERROR simeth-enable-device, ret: %d\n", ret);
-		goto do_free_netdev;
+		return -ENODEV;
 	} else {
 		pr_info ("simeth-dev-irq: %d\n", pci_dev->irq);
 	}
 
+	if (pci_resource_len (pci_dev, nic_bar_idx) < SIMETH_BAR_SZ) {
+		pr_err ("Required bar2 size: %llu\nDetected bar2 size: %llu\n", \
+				(uint64_t)SIMETH_BAR_SZ, \
+				(uint64_t)pci_resource_len (pci_dev, nic_bar_idx));
+		return -ENOMEM;
+	}
+
+	if (pci_set_mwi (pci_dev) < 0)
+		pr_warn ("pci_set_msi: unable to set MWI\n");
+	if (!pci_is_pcie (pci_dev))
+		pr_alert ("This's not PCIe!\n");
+
 	ret = pci_request_regions (pci_dev, MODULENAME);
 	if (ret < 0) {
 		pr_err ("simeth-request-regions, ret: %d\n", ret);
-		goto do_napi_del;
+		goto do_dis_dev;
 	}
 
 	/* pci-dma-mask-set comes here -TODO */
 
 	/* ioremap here */
-	ioaddr = ioremap(pci_resource_start(pci_dev, 2), \
+	ioaddr = ioremap (pci_resource_start(pci_dev, 2), \
 			pci_resource_len (pci_dev, 2));
 	if (!ioaddr) {
 		pr_err ("Error ioremap-simethnet\n");
@@ -247,9 +252,31 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 		goto do_rel_regions;
 	}
 
-	simeth_priv->ioaddr = ioaddr;
-
 	pci_set_master (pci_dev);
+
+	ret = pci_save_state (pci_dev);
+	if (ret < 0) {
+		pr_err ("Saving pci state\n");
+		goto do_iounmap;
+	}
+
+    ndev = alloc_etherdev (sizeof (*simeth_priv));
+    if (!ndev) {
+        pr_err ("Failed alloc-ether-simeth-dev\n");
+        goto do_iounmap;
+    }
+
+	SET_NETDEV_DEV (ndev, &pci_dev->dev);
+
+	ndev->netdev_ops = &simeth_netdev_ops;
+	simeth_priv = netdev_priv (ndev);
+	simeth_priv->netdev = ndev;
+	simeth_priv->pci_dev = pci_dev;
+	simeth_priv->msg_enable = netif_msg_init (debug, DEFAULT_MSG_ENABLE); /*Use this!! -TODO*/
+
+	/* any more net __inits? -TODO */
+
+	simeth_priv->ioaddr = ioaddr;
 
 	/* MAC Address */
 	for (i = 0; i < ETH_ALEN; i++) {
@@ -273,13 +300,17 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 
 do_napi_del:
 	netif_napi_del (&simeth_priv->napi);
-	iounmap (simeth_priv->ioaddr);
+    unregister_netdev (ndev);
+	free_netdev (ndev);
+do_iounmap:
+	if (simeth_priv && simeth_priv->ioaddr) {
+		iounmap (simeth_priv->ioaddr);
+	}
 do_rel_regions:
 	pci_release_regions (pci_dev);
-/*do_pci_dev_dis:*/
+do_dis_dev:
+	pci_clear_master (pci_dev);
 	pci_disable_device (pci_dev);
-do_free_netdev:
-	free_netdev (ndev);
 
 	return ret;
 }
