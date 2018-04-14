@@ -74,16 +74,16 @@ static struct pci_device_id simeth_dev_ids[] = {
 
 static void simeth_remove (struct pci_dev *pci_dev)
 {
-	struct net_device *ndev = pci_get_drvdata (pci_dev);
-	simeth_priv_t *simeth_priv = netdev_priv (ndev);
+	struct net_device *netdev = pci_get_drvdata (pci_dev);
+	simeth_adapter_t *adapter = netdev_priv (netdev);
 
 	pr_info ("Removing simeth\n");
 
-	netif_napi_del (&simeth_priv->napi);
-    unregister_netdev (ndev);
-    free_netdev (ndev);
+	netif_napi_del (&adapter->napi);
+    unregister_netdev (netdev);
+    free_netdev (netdev);
 
-	iounmap (simeth_priv->ioaddr);
+	iounmap (adapter->ioaddr);
 	pci_release_regions (pci_dev);
 	pci_clear_master (pci_dev);
 	pci_disable_device (pci_dev);
@@ -97,28 +97,28 @@ static int simeth_poll (struct napi_struct *napi, int budget)
 	return ret;
 }
 
-static int simeth_ndo_open (struct net_device	*ndev)
+static int simeth_ndo_open (struct net_device	*netdev)
 {
-	struct simeth_priv *simeth_priv = netdev_priv (ndev);
+	simeth_adapter_t *adapter = netdev_priv (netdev);
 	pr_info (" simeth_ndo_open\n");
-	napi_enable (&simeth_priv->napi);
+	napi_enable (&adapter->napi);
     return 0;
 }
 
-static int simeth_ndo_stop (struct net_device *ndev)
+static int simeth_ndo_stop (struct net_device *netdev)
 {
 	int ret = 0;
-	struct simeth_priv *simeth_priv = netdev_priv (ndev);
+	simeth_adapter_t *adapter = netdev_priv (netdev);
 	pr_info (" simeth_ndo_stop\n");
-	napi_disable (&simeth_priv->napi);
+	napi_disable (&adapter->napi);
     return ret;
 }
 
-static netdev_tx_t simeth_ndo_start_xmit (struct sk_buff *skb, struct net_device *ndev)
+static netdev_tx_t simeth_ndo_start_xmit (struct sk_buff *skb, struct net_device *netdev)
 {
 	int ret = 0, txst = 0;
 	struct simeth_pcpustats *cpstats =
-		&((struct simeth_priv *)netdev_priv (ndev))->cpstats;
+		&((simeth_adapter_t *)netdev_priv (netdev))->cpstats;
 
     if (!skb) return (netdev_tx_t)0;
 
@@ -151,32 +151,32 @@ static netdev_tx_t simeth_ndo_start_xmit (struct sk_buff *skb, struct net_device
     return ret;
 }
 
-static void simeth_ndo_get_stats64 (struct net_device *ndev, struct rtnl_link_stats64 *showstats)
+static void simeth_ndo_get_stats64 (struct net_device *netdev, struct rtnl_link_stats64 *showstats)
 {
 	uint32_t start;
-	struct simeth_priv *simeth_priv = netdev_priv (ndev);
+	simeth_adapter_t *adapter = netdev_priv (netdev);
 
 	pr_info ("simeth_get_stats64\n");
 
 	do {
-		start = u64_stats_fetch_begin_irq (&simeth_priv->cpstats.rx_stats.syncp);
-		showstats->rx_packets = simeth_priv->cpstats.rx_stats.packets;
-		showstats->rx_bytes = simeth_priv->cpstats.rx_stats.bytes;
-	} while (u64_stats_fetch_retry_irq (&simeth_priv->cpstats.rx_stats.syncp, start));
+		start = u64_stats_fetch_begin_irq (&adapter->cpstats.rx_stats.syncp);
+		showstats->rx_packets = adapter->cpstats.rx_stats.packets;
+		showstats->rx_bytes = adapter->cpstats.rx_stats.bytes;
+	} while (u64_stats_fetch_retry_irq (&adapter->cpstats.rx_stats.syncp, start));
 
 	do {
-		start = u64_stats_fetch_begin_irq (&simeth_priv->cpstats.tx_stats.syncp);
-		showstats->tx_packets = simeth_priv->cpstats.tx_stats.packets;
-		showstats->tx_bytes = simeth_priv->cpstats.tx_stats.bytes;
-	} while (u64_stats_fetch_retry_irq(&simeth_priv->cpstats.tx_stats.syncp, start));
+		start = u64_stats_fetch_begin_irq (&adapter->cpstats.tx_stats.syncp);
+		showstats->tx_packets = adapter->cpstats.tx_stats.packets;
+		showstats->tx_bytes = adapter->cpstats.tx_stats.bytes;
+	} while (u64_stats_fetch_retry_irq(&adapter->cpstats.tx_stats.syncp, start));
 
-	showstats->rx_dropped   = ndev->stats.rx_dropped;
-	showstats->tx_dropped   = ndev->stats.tx_dropped;
-	showstats->rx_length_errors = ndev->stats.rx_length_errors;
-	showstats->rx_errors    = ndev->stats.rx_errors;
-	showstats->rx_crc_errors    = ndev->stats.rx_crc_errors;
-	showstats->rx_fifo_errors   = ndev->stats.rx_fifo_errors;
-	showstats->rx_missed_errors = ndev->stats.rx_missed_errors;
+	showstats->rx_dropped   = netdev->stats.rx_dropped;
+	showstats->tx_dropped   = netdev->stats.tx_dropped;
+	showstats->rx_length_errors = netdev->stats.rx_length_errors;
+	showstats->rx_errors    = netdev->stats.rx_errors;
+	showstats->rx_crc_errors    = netdev->stats.rx_crc_errors;
+	showstats->rx_fifo_errors   = netdev->stats.rx_fifo_errors;
+	showstats->rx_missed_errors = netdev->stats.rx_missed_errors;
 }
 
 static const struct net_device_ops simeth_netdev_ops = {
@@ -207,8 +207,8 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 {
 	int ret = 0;
 	int i = 0;
-	struct net_device *ndev = NULL;
-	simeth_priv_t *simeth_priv = NULL;
+	struct net_device *netdev = NULL;
+	simeth_adapter_t *adapter = NULL;
 	const unsigned int nic_bar_idx = (unsigned int)(id->driver_data);
 	void __iomem *ioaddr;
 
@@ -260,51 +260,51 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 		goto do_iounmap;
 	}
 
-    ndev = alloc_etherdev (sizeof (*simeth_priv));
-    if (!ndev) {
+    netdev = alloc_etherdev (sizeof (*adapter));
+    if (!netdev) {
         pr_err ("Failed alloc-ether-simeth-dev\n");
         goto do_iounmap;
     }
 
-	SET_NETDEV_DEV (ndev, &pci_dev->dev);
+	SET_NETDEV_DEV (netdev, &pci_dev->dev);
 
-	ndev->netdev_ops = &simeth_netdev_ops;
-	simeth_priv = netdev_priv (ndev);
-	simeth_priv->netdev = ndev;
-	simeth_priv->pci_dev = pci_dev;
-	simeth_priv->msg_enable = netif_msg_init (debug, DEFAULT_MSG_ENABLE); /*Use this!! -TODO*/
+	netdev->netdev_ops = &simeth_netdev_ops;
+	adapter = netdev_priv (netdev);
+	adapter->netdev = netdev;
+	adapter->pci_dev = pci_dev;
+	adapter->msg_enable = netif_msg_init (debug, DEFAULT_MSG_ENABLE); /*Use this!! -TODO*/
 
 	/* any more net __inits? -TODO */
 
-	simeth_priv->ioaddr = ioaddr;
+	adapter->ioaddr = ioaddr;
 
 	/* MAC Address */
 	for (i = 0; i < ETH_ALEN; i++) {
-		ndev->dev_addr[i] = (unsigned char)simeth_mac_byte (i);
+		netdev->dev_addr[i] = (unsigned char)simeth_mac_byte (i);
 	}
 
-	netif_napi_add (ndev, &simeth_priv->napi, simeth_poll, SIMETH_NAPI_WEIGHT);
+	netif_napi_add (netdev, &adapter->napi, simeth_poll, SIMETH_NAPI_WEIGHT);
 
-	ndev->features |= NETIF_F_RXCSUM |
+	netdev->features |= NETIF_F_RXCSUM |
 		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
 
-    ret = register_netdev (ndev);
+    ret = register_netdev (netdev);
     if (ret < 0) {
         pr_err ("Failed register-netdev, ret: %d\n", ret);
 		goto do_napi_del;
     }
 
-	pci_set_drvdata (pci_dev, ndev);
+	pci_set_drvdata (pci_dev, netdev);
 
 	return 0;
 
 do_napi_del:
-	netif_napi_del (&simeth_priv->napi);
-    unregister_netdev (ndev);
-	free_netdev (ndev);
+	netif_napi_del (&adapter->napi);
+    unregister_netdev (netdev);
+	free_netdev (netdev);
 do_iounmap:
-	if (simeth_priv && simeth_priv->ioaddr) {
-		iounmap (simeth_priv->ioaddr);
+	if (adapter && adapter->ioaddr) {
+		iounmap (adapter->ioaddr);
 	}
 do_rel_regions:
 	pci_release_regions (pci_dev);

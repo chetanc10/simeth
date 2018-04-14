@@ -95,7 +95,7 @@ typedef struct simeth_priv {
 	int                 mode;
 	int                 msg_enable;
 	void                *ioaddr; /*used for BAR access for nic dma ctrl*/
-} simeth_priv_t;
+} simeth_adapter_t;
 
 #endif /*__SIMETH_H*/
 
