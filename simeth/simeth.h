@@ -5,6 +5,7 @@
 #include <linux/types.h>
 #include <linux/list.h>
 #include <linux/u64_stats_sync.h>
+#include <linux/netdevice.h>
 
 #include "simeth_nic.h"
 
@@ -12,7 +13,7 @@
 #define SIMETH_VERSION "0.1"
 
 /* If a real xmit is going to happen, this shall be 1, else 0 (dummy) */
-#define XMIT_IS_REAL 0
+#define XMIT_IS_REAL 1
 
 /* NAPI Poll weight */
 #define SIMETH_NAPI_WEIGHT 1
@@ -23,6 +24,28 @@
 
 /* Minimum size of the IVSHMEM bar for simeth to function as expected */
 #define SIMETH_BAR_SZ (512 * 1024 * 1024)
+
+/* error logging function macros for simeth */
+#define simeth_dbg(format, arg...) \
+	netdev_dbg (adapter->netdev, format, ## arg)
+#define simeth_err(msglvl, format, arg...) \
+	netif_err (adapter, msglvl, adapter->netdev, format, ## arg)
+#define simeth_info(msglvl, format, arg...) \
+	netif_info (adapter, msglvl, adapter->netdev, format, ## arg)
+#define simeth_warn(msglvl, format, arg...) \
+	netif_warn (adapter, msglvl, adapter->netdev, format, ## arg)
+#define simeth_notice(msglvl, format, arg...) \
+	netif_notice (adapter, msglvl, adapter->netdev, format, ## arg)
+#define simeth_crit(msglvl, format, arg...) \
+	netif_crit (adapter, msglvl, adapter->netdev, format, ## arg)
+#define simeth_emerg(msglvl, format, arg...) \
+	netif_emerg (adapter, msglvl, adapter->netdev, format, ## arg)
+#define simeth_dev_info(format, arg...) \
+	dev_info (&adapter->pdev->dev, format, ## arg)
+#define simeth_dev_warn(format, arg...) \
+	dev_warn (&adapter->pdev->dev, format, ## arg)
+#define simeth_dev_err(format, arg...) \
+	dev_err (&adapter->pdev->dev, format, ## arg)
 
 typedef struct simeth_stats {
 	uint64_t packets;
@@ -82,7 +105,7 @@ typedef struct simeth_priv {
 	simeth_pcps_t       cpstats;
 	struct napi_struct  napi;
 	struct net_device   *netdev;
-	struct pci_dev      *pci_dev;
+	struct pci_dev      *pcidev;
 
 	uint32_t            n_txqs;
 	uint32_t            n_rxqs;

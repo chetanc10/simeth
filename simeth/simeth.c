@@ -11,6 +11,7 @@
  */
 
 #include <linux/types.h>
+#include <linux/pci-aspm.h>
 #include <linux/module.h>
 #include <linux/compiler.h>
 #include <linux/pci.h>
@@ -53,10 +54,19 @@ MODULE_LICENSE ("GPL");
 MODULE_VERSION (SIMETH_VERSION);
 
 #define MODULENAME "simeth"
-#define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV|NETIF_MSG_PROBE|NETIF_MSG_LINK)
-static int debug = -1;
-module_param (debug, int, 0);
-MODULE_PARM_DESC (debug, "Debug level (0=none,...,16=all)");
+
+#define SIMETH_DEF_MSG_EN (NETIF_MSG_DRV | \
+		NETIF_MSG_PROBE | NETIF_MSG_LINK | \
+		NETIF_MSG_IFDOWN | NETIF_MSG_IFUP | \
+		NETIF_MSG_TX_ERR | NETIF_MSG_RX_ERR | \
+		NETIF_MSG_HW)
+
+static struct {
+	uint32_t msg_enable;
+} debugm = {(uint32_t)(-1)};
+/*allow user/others to rd/wr debug control*/
+module_param_named(debugm, debugm.msg_enable, int, 0660);
+MODULE_PARM_DESC (debugm, "Debug level (0=none,...,16=all)");
 
 typedef enum simeth_dev_region {
 	SIMETH_BAR_0 = 0,
@@ -72,35 +82,38 @@ static struct pci_device_id simeth_dev_ids[] = {
 	{0,} /* sentinel */
 };
 
-static void simeth_remove (struct pci_dev *pci_dev)
+static void simeth_remove (struct pci_dev *pcidev)
 {
-	struct net_device *netdev = pci_get_drvdata (pci_dev);
+	struct net_device *netdev = pci_get_drvdata (pcidev);
 	simeth_adapter_t *adapter = netdev_priv (netdev);
 
-	pr_info ("Removing simeth\n");
+	simeth_info (drv, "%s\n", __func__);
 
 	netif_napi_del (&adapter->napi);
     unregister_netdev (netdev);
     free_netdev (netdev);
 
 	iounmap (adapter->ioaddr);
-	pci_release_regions (pci_dev);
-	pci_clear_master (pci_dev);
-	pci_disable_device (pci_dev);
+	pci_release_regions (pcidev);
+	pci_clear_master (pcidev);
+	pci_disable_device (pcidev);
 }
 
-static int simeth_poll (struct napi_struct *napi, int budget)
+static int simeth_napi_rxpoll (struct napi_struct *napi, int budget)
 {
 	int ret = 0;
+	simeth_adapter_t *adapter = container_of(napi, simeth_adapter_t, napi);
 
-	pr_info ("simeth_poll\n");
+	simeth_dbg ("%s\n", __func__);
 	return ret;
 }
+
+int (*simeth_xmit_mac_fn) (struct sk_buff *skb);
 
 static int simeth_ndo_open (struct net_device	*netdev)
 {
 	simeth_adapter_t *adapter = netdev_priv (netdev);
-	pr_info (" simeth_ndo_open\n");
+	simeth_info (probe, "%s\n", __func__);
 	napi_enable (&adapter->napi);
     return 0;
 }
@@ -109,7 +122,7 @@ static int simeth_ndo_stop (struct net_device *netdev)
 {
 	int ret = 0;
 	simeth_adapter_t *adapter = netdev_priv (netdev);
-	pr_info (" simeth_ndo_stop\n");
+	simeth_info (drv, "%s\n", __func__);
 	napi_disable (&adapter->napi);
     return ret;
 }
@@ -117,16 +130,18 @@ static int simeth_ndo_stop (struct net_device *netdev)
 static netdev_tx_t simeth_ndo_start_xmit (struct sk_buff *skb, struct net_device *netdev)
 {
 	int ret = 0, txst = 0;
-	struct simeth_pcpustats *cpstats =
-		&((simeth_adapter_t *)netdev_priv (netdev))->cpstats;
+	simeth_adapter_t *adapter = netdev_priv (netdev);
+	struct simeth_pcpustats *cpstats = &adapter->cpstats;
 
     if (!skb) return (netdev_tx_t)0;
+
+	simeth_info (drv, "%s\n", __func__);
 
 #if XMIT_IS_REAL
 	if (simeth_xmit_mac_fn) {
 		ret = simeth_xmit_mac_fn (skb);
 		if (ret < 0) {/*check for -1/-2,etc err cases*/
-			pr_err ("in simeth_xmit_mac, ret: %d\n", ret);
+			simeth_err (tx_err, "in simeth_xmit_mac, ret: %d\n", ret);
 			txst = ret;
 			ret = NETDEV_TX_BUSY;
 		}
@@ -142,7 +157,8 @@ static netdev_tx_t simeth_ndo_start_xmit (struct sk_buff *skb, struct net_device
 		switch (txst) {
 			case -1: cpstats->tx_stats.dropped += 1; break;
 			case -2: cpstats->tx_stats.errors += 1; break;
-			default: pr_err ("in simeth_xmit_mac.. txst: %d\n", txst); break;
+			default: simeth_err (tx_err, "%s txst: %d\n", __func__, txst);
+					 break;
 		}
 	}
 
@@ -156,7 +172,7 @@ static void simeth_ndo_get_stats64 (struct net_device *netdev, struct rtnl_link_
 	uint32_t start;
 	simeth_adapter_t *adapter = netdev_priv (netdev);
 
-	pr_info ("simeth_get_stats64\n");
+	simeth_info (drv, "%s\n", __func__);
 
 	do {
 		start = u64_stats_fetch_begin_irq (&adapter->cpstats.rx_stats.syncp);
@@ -195,15 +211,15 @@ static const struct net_device_ops simeth_netdev_ops = {
 #endif
 };
 
-static uint8_t _dummy_simeth_mac[] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
 static inline uint8_t simeth_mac_byte (int i)
 {
+	static uint8_t _dummy_simeth_mac[] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
 	/* TODO - Prep a hw register set to allow read actual MAC
 	 * and remove the dummy eth mac stuff! */
 	return _dummy_simeth_mac[i];
 }
 
-static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
+static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 {
 	int ret = 0;
 	int i = 0;
@@ -212,67 +228,78 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 	const unsigned int nic_bar_idx = (unsigned int)(id->driver_data);
 	void __iomem *ioaddr;
 
-	pr_info ("Probing simeth\n");
+	if (0 && netif_msg_drv(&debugm)) {
+		pr_info ("Probing %s Ethernet driver, Version %s\n", \
+				MODULENAME, SIMETH_VERSION);
+	}
+
+    netdev = alloc_etherdev (sizeof (*adapter));
+    if (!netdev) {
+        pr_err ("Failed alloc-ether-simeth-dev\n");
+        return -ENOMEM;
+    }
+
+	SET_NETDEV_DEV (netdev, &pcidev->dev);
+
+	netdev->netdev_ops = &simeth_netdev_ops;
+	adapter = netdev_priv (netdev);
+	adapter->netdev = netdev;
+	adapter->pcidev = pcidev;
+	adapter->msg_enable = netif_msg_init (debugm.msg_enable, SIMETH_DEF_MSG_EN);
+
+	/* If aspm needs to be disabled, now is the time before enabling device!
+	 * Some devices may be unable to handle aspm power states like l0s, l1 
+	 * properly and may effect the functionality of driver or system */
+	pci_disable_link_state (pcidev, \
+			PCIE_LINK_STATE_L0S | PCIE_LINK_STATE_L1 | PCIE_LINK_STATE_CLKPM);
 
 	/* PCI setup */
-	ret = pci_enable_device (pci_dev);
+	ret = pci_enable_device (pcidev);
 	if (ret < 0) {
-		pr_err ("ERROR simeth-enable-device, ret: %d\n", ret);
-		return -ENODEV;
+		simeth_crit (probe, "ERROR simeth-enable-device, ret: %d\n", ret);
+		goto do_free_netdev;
 	} else {
-		pr_info ("simeth-dev-irq: %d\n", pci_dev->irq);
+		simeth_info (probe, "simeth-dev-irq: %d\n", pcidev->irq);
 	}
 
-	if (pci_resource_len (pci_dev, nic_bar_idx) < SIMETH_BAR_SZ) {
-		pr_err ("Required bar2 size: %llu\nDetected bar2 size: %llu\n", \
+	if (pci_resource_len (pcidev, nic_bar_idx) < SIMETH_BAR_SZ) {
+		simeth_emerg (probe, "Required bar2 size: %llu\nDetected bar2 size: %llu\n", \
 				(uint64_t)SIMETH_BAR_SZ, \
-				(uint64_t)pci_resource_len (pci_dev, nic_bar_idx));
-		return -ENOMEM;
+				(uint64_t)pci_resource_len (pcidev, nic_bar_idx));
+		ret = -EIO;
+		goto do_dis_dev;
 	}
 
-	if (pci_set_mwi (pci_dev) < 0)
-		pr_warn ("pci_set_msi: unable to set MWI\n");
-	if (!pci_is_pcie (pci_dev))
-		pr_alert ("This's not PCIe!\n");
+	if (pci_set_mwi (pcidev) < 0)
+		simeth_warn (probe, "pci_set_msi: unable to set MWI\n");
+	if (!pci_is_pcie (pcidev))
+		simeth_notice (probe, "This's not PCIe!\n");
 
-	ret = pci_request_regions (pci_dev, MODULENAME);
+	ret = pci_request_regions (pcidev, MODULENAME);
 	if (ret < 0) {
-		pr_err ("simeth-request-regions, ret: %d\n", ret);
+		simeth_err (probe, "simeth-request-regions, ret: %d\n", ret);
 		goto do_dis_dev;
 	}
 
 	/* pci-dma-mask-set comes here -TODO */
 
 	/* ioremap here */
-	ioaddr = ioremap (pci_resource_start(pci_dev, 2), \
-			pci_resource_len (pci_dev, 2));
+	ioaddr = ioremap (pci_resource_start(pcidev, 2), \
+			pci_resource_len (pcidev, 2));
 	if (!ioaddr) {
-		pr_err ("Error ioremap-simethnet\n");
+		simeth_err (probe, "Error ioremap-simethnet\n");
 		ret = -1;
 		goto do_rel_regions;
 	}
 
-	pci_set_master (pci_dev);
+	/* set bus-mastering for the device */
+	pci_set_master (pcidev);
 
-	ret = pci_save_state (pci_dev);
+	ret = pci_save_state (pcidev);
 	if (ret < 0) {
-		pr_err ("Saving pci state\n");
-		goto do_iounmap;
+		simeth_err (probe, "Saving pci state\n");
+		goto do_clear_master;
 	}
-
-    netdev = alloc_etherdev (sizeof (*adapter));
-    if (!netdev) {
-        pr_err ("Failed alloc-ether-simeth-dev\n");
-        goto do_iounmap;
-    }
-
-	SET_NETDEV_DEV (netdev, &pci_dev->dev);
-
-	netdev->netdev_ops = &simeth_netdev_ops;
-	adapter = netdev_priv (netdev);
-	adapter->netdev = netdev;
-	adapter->pci_dev = pci_dev;
-	adapter->msg_enable = netif_msg_init (debug, DEFAULT_MSG_ENABLE); /*Use this!! -TODO*/
 
 	/* any more net __inits? -TODO */
 
@@ -283,34 +310,35 @@ static int simeth_probe (struct pci_dev *pci_dev, const struct pci_device_id *id
 		netdev->dev_addr[i] = (unsigned char)simeth_mac_byte (i);
 	}
 
-	netif_napi_add (netdev, &adapter->napi, simeth_poll, SIMETH_NAPI_WEIGHT);
+	netif_napi_add (netdev, &adapter->napi, simeth_napi_rxpoll, SIMETH_NAPI_WEIGHT);
 
 	netdev->features |= NETIF_F_RXCSUM |
 		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
 
     ret = register_netdev (netdev);
     if (ret < 0) {
-        pr_err ("Failed register-netdev, ret: %d\n", ret);
+        simeth_crit (probe, "Failed register-netdev, ret: %d\n", ret);
 		goto do_napi_del;
     }
 
-	pci_set_drvdata (pci_dev, netdev);
+	pci_set_drvdata (pcidev, netdev);
+
+	simeth_info (probe, "simeth set to go!");
 
 	return 0;
 
 do_napi_del:
 	netif_napi_del (&adapter->napi);
-    unregister_netdev (netdev);
-	free_netdev (netdev);
-do_iounmap:
-	if (adapter && adapter->ioaddr) {
-		iounmap (adapter->ioaddr);
-	}
+do_clear_master:
+	pci_clear_master (pcidev);
+/*do_iounmap:*/
+	iounmap (adapter->ioaddr);
 do_rel_regions:
-	pci_release_regions (pci_dev);
+	pci_release_regions (pcidev);
 do_dis_dev:
-	pci_clear_master (pci_dev);
-	pci_disable_device (pci_dev);
+	pci_disable_device (pcidev);
+do_free_netdev:
+	free_netdev (netdev);
 
 	return ret;
 }
@@ -327,11 +355,11 @@ static int __init simeth_init_module (void)
 {
 	int ret = 0;
 
-	pr_info ("in %s. Version: %s\n", __func__, SIMETH_VERSION);
+	pr_info ("%s, Version: %s\n", __func__, SIMETH_VERSION);
 
 	ret = pci_register_driver (&simeth_drv);
 	if (ret < 0) {
-		printk ("ERROR pcic-drv-registration\n");
+		pr_crit ("ERROR pcic-drv-registration for simeth\n");
 	}
 
 	return ret;
