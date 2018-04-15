@@ -219,6 +219,63 @@ static inline uint8_t simeth_mac_byte (int i)
 	return _dummy_simeth_mac[i];
 }
 
+static void _setup_ethtool_ops (struct net_device *netdev)
+{
+	simeth_adapter_t *adapter = netdev_priv (netdev);
+	simeth_info (probe, "%s TODO\n", __func__); /*TODO - setup ethtool ops*/
+}
+
+static int _simeth_alloc_qs (simeth_adapter_t *adapter)
+{
+	adapter->txq = kcalloc (adapter->n_txqs, 
+			sizeof (simeth_txq_t), GFP_KERNEL);
+	if (!adapter->txq) {
+		simeth_err (probe, "kcalloc (adapter->txq) failed\n");
+		return -ENOMEM;
+	}
+
+	adapter->rxq = kcalloc (adapter->n_rxqs, 
+			sizeof (simeth_rxq_t), GFP_KERNEL);
+	if (!adapter->rxq) {
+		simeth_err (probe, "kcalloc (adapter->rxq) failed\n");
+		simeth_free (kfree, adapter->txq);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static void __used _simeth_irq_enable (simeth_adapter_t *adapter)
+{
+	/* TODO - reset mask bit or do something similar
+	 * to enable interrupt generation on this device */
+	/*writel and then readl*/
+}
+
+static void _simeth_irq_disable (simeth_adapter_t *adapter)
+{
+	/* TODO - set mask bit or do something similar
+	 * to disable interrupt generation on this device */
+	/*writel and then readl*/
+	/*synchronize_irq (adapter->pcidev->irq);*/
+}
+
+static int _simeth_setup_adapter (simeth_adapter_t *adapter)
+{
+	int ret = 0;
+
+	adapter->rx_buflen = MAX_ETH_VLAN_SZ;
+
+	adapter->n_txqs = 1;
+	adapter->n_rxqs = 1;
+
+	ret = _simeth_alloc_qs (adapter);
+	if (ret) return ret;
+
+	_simeth_irq_disable (adapter);
+	return ret;
+}
+
 static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 {
 	int ret = 0;
@@ -323,7 +380,15 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	pci_set_drvdata (pcidev, netdev);
 
-	simeth_info (probe, "simeth set to go!");
+	simeth_info (probe, "simeth starter setup done!");
+
+	strncpy (netdev->name, pci_name (pcidev), sizeof (netdev->name) - 1);
+
+	ret = _simeth_setup_adapter (adapter);
+
+	_setup_ethtool_ops (netdev);
+
+	/*netdev->watchdog_timeo = 5*HZ; TODO - add tx-timeout handler*/
 
 	return 0;
 

@@ -25,6 +25,9 @@
 /* Minimum size of the IVSHMEM bar for simeth to function as expected */
 #define SIMETH_BAR_SZ (512 * 1024 * 1024)
 
+/* Maximum size of rx buffer with VLAN tag generally 1518 + 4 */
+#define MAX_ETH_VLAN_SZ 1522
+
 /* error logging function macros for simeth */
 #define simeth_dbg(format, arg...) \
 	netdev_dbg (adapter->netdev, format, ## arg)
@@ -46,6 +49,9 @@
 	dev_warn (&adapter->pdev->dev, format, ## arg)
 #define simeth_dev_err(format, arg...) \
 	dev_err (&adapter->pdev->dev, format, ## arg)
+
+/* Memory free and nullify pointer */
+#define simeth_free(free_fn, ptr) { free_fn ((ptr)); (ptr) = NULL; }
 
 typedef struct simeth_stats {
 	uint64_t packets;
@@ -77,16 +83,17 @@ typedef struct simeth_rx_buf {
 
 /* simeth tx/rx queue handler structure */
 typedef struct simeth_q {
-	uint32_t            ring_sz; /*number of descs in desc ring*/
-
-	uint32_t            dring_align_bytes; /*number of bytes to align the dring*/
-	void                *dring_main; /*unaligned allocated buffer pointer*/
 	union {
 		void            *dring; /*aligned dring buffer pointer*/
 		simeth_desc_t   *tx_dring; /*tx dring typecast*/
 		simeth_desc_t   *rx_dring; /*rx dring typecast*/
 	};
+
+	uint32_t            ring_sz; /*number of descs in desc ring*/
+
+	void                *dring_main; /*unaligned allocated buffer pointer*/
 	dma_addr_t          dring_dma_addr;
+	uint32_t            dring_align_bytes; /*number of bytes to align the dring*/
 
 	uint32_t            qbufs_align_bytes; /*number of bytes to align the buffer ring*/
 	void                *qbufs_main; /*unaligned allocated buffer pointer*/
@@ -94,6 +101,15 @@ typedef struct simeth_q {
 		void            *bufs; /*aligned allocated buffer pointer*/
 		simeth_tx_buf_t *tx_bufs; /*each node contins skbuff, flags, relevant desc*/
 		simeth_rx_buf_t *rx_bufs; /*each node contins skbuff, flags, relevant desc*/
+	};
+
+	union { /* desc head of rx/tx desc q */
+		uint32_t            txdh;
+		uint32_t            rxdh;
+	};
+	union { /* desc tail of rx/tx desc q */
+		uint32_t            txdt;
+		uint32_t            rxdt;
 	};
 } simeth_q_t ____cacheline_internodealigned_in_smp;
 
@@ -109,8 +125,8 @@ typedef struct simeth_priv {
 
 	uint32_t            n_txqs;
 	uint32_t            n_rxqs;
-	simeth_q_t          *tx_q;
-	simeth_q_t          *rx_q;
+	simeth_q_t          *txq;
+	simeth_q_t          *rxq;
 
 	/*simeth_stats_t      drv_tx_stats;*/
 	/*simeth_stats_t      drv_rx_stats;*/
@@ -118,6 +134,8 @@ typedef struct simeth_priv {
 	int                 mode;
 	int                 msg_enable;
 	void                *ioaddr; /*used for BAR access for nic dma ctrl*/
+
+	uint32_t            rx_buflen;
 } simeth_adapter_t;
 
 #endif /*__SIMETH_H*/
