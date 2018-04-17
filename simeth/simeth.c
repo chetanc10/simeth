@@ -189,7 +189,8 @@ static void simeth_ndo_get_stats64 (struct net_device *netdev, struct rtnl_link_
 	uint32_t start;
 	simeth_adapter_t *adapter = netdev_priv (netdev);
 
-	simeth_info (drv, "%s\n", __func__);
+	/*This log should be seen in dmesg with level 8 on printk in proc -TODO*/
+	simeth_dbg ("%s\n", __func__);
 
 	do {
 		start = u64_stats_fetch_begin_irq (&adapter->cpstats.rx_stats.syncp);
@@ -308,7 +309,7 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 	const unsigned int nic_bar_idx = (unsigned int)(id->driver_data);
 	void __iomem *ioaddr;
 
-	if (0 && netif_msg_drv(&debugm)) {
+	if (netif_msg_drv(&debugm)) {
 		pr_info ("Probing %s Ethernet driver, Version %s\n", \
 				MODULENAME, SIMETH_VERSION);
 	}
@@ -454,7 +455,7 @@ static int __init simeth_init_module (void)
 {
 	int ret = 0;
 
-	pr_info ("%s, Version: %s\n", __func__, SIMETH_VERSION);
+	pr_info ("%s\n", __func__);
 
 	ret = pci_register_driver (&simeth_drv);
 	if (ret < 0) {
