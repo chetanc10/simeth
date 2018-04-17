@@ -2,9 +2,12 @@
 /**
  * simeth.c
  *
- * This is a simulated ethernet driver based on IVSHMEM.
+ * This is the main driver file for the SIMulated ETHernet driver.
+ * This is based on IVSHMEM during initial phase, later phases include
+ * dma from host application and other enhancements, once basic simeth's up.
+ *
  * The module can be inserted and used inside a VM while
- * host memory shared acts a register and descriptor handler
+ * host shared (IVSHMEM) memory shared acts as resource used
  * with a ethernet NIC engine in a software application on host
  *
  * Author:   ChetaN KS (chetan.kumarsanga@gmail.com)
@@ -82,6 +85,19 @@ static struct pci_device_id simeth_dev_ids[] = {
 	{0,} /* sentinel */
 };
 
+
+static inline void _simeth_clean_adapter (simeth_adapter_t *adapter);
+static void _simeth_release_qs (simeth_adapter_t *adapter);
+static int _simeth_alloc_qs (simeth_adapter_t *adapter);
+static void __used _simeth_irq_enable (simeth_adapter_t *adapter);
+static void _simeth_irq_disable (simeth_adapter_t *adapter);
+static int _simeth_setup_adapter (simeth_adapter_t *adapter);
+
+static inline void _simeth_clean_adapter (simeth_adapter_t *adapter)
+{
+	_simeth_release_qs (adapter);
+}
+
 static void simeth_remove (struct pci_dev *pcidev)
 {
 	struct net_device *netdev = pci_get_drvdata (pcidev);
@@ -91,9 +107,10 @@ static void simeth_remove (struct pci_dev *pcidev)
 
 	netif_napi_del (&adapter->napi);
     unregister_netdev (netdev);
+	simeth_release (iounmap, adapter->ioaddr);
+	_simeth_clean_adapter (adapter);
     free_netdev (netdev);
 
-	iounmap (adapter->ioaddr);
 	pci_release_regions (pcidev);
 	pci_clear_master (pcidev);
 	pci_disable_device (pcidev);
@@ -225,6 +242,12 @@ static void _setup_ethtool_ops (struct net_device *netdev)
 	simeth_info (probe, "%s TODO\n", __func__); /*TODO - setup ethtool ops*/
 }
 
+static void _simeth_release_qs (simeth_adapter_t *adapter)
+{
+	simeth_release (kfree, adapter->txq);
+	simeth_release (kfree, adapter->rxq);
+}
+
 static int _simeth_alloc_qs (simeth_adapter_t *adapter)
 {
 	adapter->txq = kcalloc (adapter->n_txqs, 
@@ -238,7 +261,7 @@ static int _simeth_alloc_qs (simeth_adapter_t *adapter)
 			sizeof (simeth_rxq_t), GFP_KERNEL);
 	if (!adapter->rxq) {
 		simeth_err (probe, "kcalloc (adapter->rxq) failed\n");
-		simeth_free (kfree, adapter->txq);
+		simeth_release (kfree, adapter->txq);
 		return -ENOMEM;
 	}
 
@@ -338,7 +361,17 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 		goto do_dis_dev;
 	}
 
-	/* pci-dma-mask-set comes here -TODO */
+	/* pci-dma-mask-settings, even this's simeth just try
+	 * setting dma-mask and discard errors for time being */
+	ret = pci_set_dma_mask (pcidev, DMA_BIT_MASK (64));
+	if (ret) {
+		simeth_warn (probe, "error pci_set_dma_mask-64: %d", ret);
+		ret = pci_set_dma_mask (pcidev, DMA_BIT_MASK (32));
+		if (ret) {
+			simeth_warn (probe, "error pci_set_dma_mask-32: %d", ret);
+			/*goto do_dis_dev;*/
+		}
+	}
 
 	/* ioremap here */
 	ioaddr = ioremap (pci_resource_start(pcidev, 2), \
@@ -358,8 +391,6 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 		goto do_clear_master;
 	}
 
-	/* any more net __inits? -TODO */
-
 	adapter->ioaddr = ioaddr;
 
 	/* MAC Address */
@@ -367,31 +398,35 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 		netdev->dev_addr[i] = (unsigned char)simeth_mac_byte (i);
 	}
 
-	netif_napi_add (netdev, &adapter->napi, simeth_napi_rxpoll, SIMETH_NAPI_WEIGHT);
-
 	netdev->features |= NETIF_F_RXCSUM |
 		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
+
+	_setup_ethtool_ops (netdev);
+
+	netif_napi_add (netdev, &adapter->napi, simeth_napi_rxpoll, SIMETH_NAPI_WEIGHT);
+
+	/*netdev->watchdog_timeo = 5*HZ; TODO - add tx-timeout handler*/
+
+	pci_set_drvdata (pcidev, netdev);
+
+	ret = _simeth_setup_adapter (adapter);
+    if (ret < 0) {
+        simeth_crit (probe, "Failed adapter_setup: %d\n", ret);
+		goto do_napi_del;
+    }
 
     ret = register_netdev (netdev);
     if (ret < 0) {
         simeth_crit (probe, "Failed register-netdev, ret: %d\n", ret);
-		goto do_napi_del;
+		goto do_clean_adapter;
     }
 
-	pci_set_drvdata (pcidev, netdev);
-
-	simeth_info (probe, "simeth starter setup done!");
-
-	strncpy (netdev->name, pci_name (pcidev), sizeof (netdev->name) - 1);
-
-	ret = _simeth_setup_adapter (adapter);
-
-	_setup_ethtool_ops (netdev);
-
-	/*netdev->watchdog_timeo = 5*HZ; TODO - add tx-timeout handler*/
+	simeth_info (probe, "simeth setup done!");
 
 	return 0;
 
+do_clean_adapter:
+	_simeth_clean_adapter (adapter);
 do_napi_del:
 	netif_napi_del (&adapter->napi);
 do_clear_master:
@@ -407,7 +442,6 @@ do_free_netdev:
 
 	return ret;
 }
-
 
 static struct pci_driver simeth_drv = {
 	.name = MODULENAME,

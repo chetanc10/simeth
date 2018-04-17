@@ -50,8 +50,9 @@
 #define simeth_dev_err(format, arg...) \
 	dev_err (&adapter->pdev->dev, format, ## arg)
 
-/* Memory free and nullify pointer */
-#define simeth_free(free_fn, ptr) { free_fn ((ptr)); (ptr) = NULL; }
+/* Resource realeasing and nullify pointer */
+#define simeth_release(rel_fn, ptr) \
+	if ((ptr)) { rel_fn ((ptr)); (ptr) = NULL; }
 
 typedef struct simeth_stats {
 	uint64_t packets;
