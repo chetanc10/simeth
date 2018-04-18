@@ -235,7 +235,7 @@ static const struct net_device_ops simeth_netdev_ops = {
 
 static inline uint8_t simeth_mac_byte (int i)
 {
-	static uint8_t _dummy_simeth_mac[] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
+	static uint8_t _dummy_simeth_mac[] = {0x80, 0xce, 0x62, 0x10, 0x95, 0x2c};
 	/* TODO - Prep a hw register set to allow read actual MAC
 	 * and remove the dummy eth mac stuff! */
 	return _dummy_simeth_mac[i];
