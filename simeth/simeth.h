@@ -28,6 +28,9 @@
 /* Maximum size of rx buffer with VLAN tag generally 1518 + 4 */
 #define MAX_ETH_VLAN_SZ 1522
 
+/* Maximum jumbo frame size including all types of headers */
+#define MAX_JUMBO_FRAME_SIZE 4096
+
 /* error logging function macros for simeth */
 #define simeth_dbg(format, arg...) \
 	netdev_dbg (adapter->netdev, format, ## arg)
@@ -137,6 +140,8 @@ typedef struct simeth_priv {
 	void                *ioaddr; /*used for BAR access for nic dma ctrl*/
 
 	uint32_t            rx_buflen;
+
+	uint8_t             mac_addr[ETH_ALEN];
 } simeth_adapter_t;
 
 #endif /*__SIMETH_H*/

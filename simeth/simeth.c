@@ -92,6 +92,10 @@ static int _simeth_alloc_qs (simeth_adapter_t *adapter);
 static void __used _simeth_irq_enable (simeth_adapter_t *adapter);
 static void _simeth_irq_disable (simeth_adapter_t *adapter);
 static int _simeth_setup_adapter (simeth_adapter_t *adapter);
+static void _simeth_init_hw (simeth_adapter_t *adapter);
+static void _simeth_reset_hw (simeth_adapter_t *adapter);
+static void _simeth_init_mdio_ops (simeth_adapter_t *adapter);
+static int _simeth_get_valid_mac_addr (simeth_adapter_t *adapter);
 
 static inline void _simeth_clean_adapter (simeth_adapter_t *adapter)
 {
@@ -300,10 +304,45 @@ static int _simeth_setup_adapter (simeth_adapter_t *adapter)
 	return ret;
 }
 
+static void _simeth_init_hw (simeth_adapter_t *adapter)
+{
+	simeth_info (probe, "%s\n", __func__);
+}
+
+static void _simeth_reset_hw (simeth_adapter_t *adapter)
+{
+	simeth_info (drv, "%s\n", __func__);
+}
+
+static void _simeth_init_mdio_ops (simeth_adapter_t *adapter)
+{
+	simeth_info (drv, "%s\n", __func__);
+}
+
+static int _simeth_get_valid_mac_addr (simeth_adapter_t *adapter)
+{
+	uint8_t mac_addr[ETH_ALEN];
+
+	mac_addr[0] = (unsigned char)simeth_mac_byte (0);
+	mac_addr[1] = (unsigned char)simeth_mac_byte (1);
+	mac_addr[2] = (unsigned char)simeth_mac_byte (2);
+	mac_addr[3] = (unsigned char)simeth_mac_byte (3);
+	mac_addr[4] = (unsigned char)simeth_mac_byte (4);
+	mac_addr[5] = (unsigned char)simeth_mac_byte (5);
+
+	if (is_valid_ether_addr (mac_addr)) {
+		simeth_info (hw, "simeth_hw_mac_addr: %pM\n", mac_addr);
+		memcpy (adapter->mac_addr, mac_addr, ETH_ALEN);
+		return 0;
+	} else {
+		simeth_err (hw, "INVALID simeth_hw_mac_addr: %pM\n", mac_addr);
+		return -EINVAL;
+	}
+}
+
 static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 {
 	int ret = 0;
-	int i = 0;
 	struct net_device *netdev = NULL;
 	simeth_adapter_t *adapter = NULL;
 	const unsigned int nic_bar_idx = (unsigned int)(id->driver_data);
@@ -347,7 +386,7 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 		simeth_emerg (probe, "Required bar2 size: %llu\nDetected bar2 size: %llu\n", \
 				(uint64_t)SIMETH_BAR_SZ, \
 				(uint64_t)pci_resource_len (pcidev, nic_bar_idx));
-		ret = -EIO;
+		ret = -ENOMEM;
 		goto do_dis_dev;
 	}
 
@@ -365,10 +404,10 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 	/* pci-dma-mask-settings, even this's simeth just try
 	 * setting dma-mask and discard errors for time being */
 	ret = pci_set_dma_mask (pcidev, DMA_BIT_MASK (64));
-	if (ret) {
+	if (ret < 0) {
 		simeth_warn (probe, "error pci_set_dma_mask-64: %d", ret);
 		ret = pci_set_dma_mask (pcidev, DMA_BIT_MASK (32));
-		if (ret) {
+		if (ret < 0) {
 			simeth_warn (probe, "error pci_set_dma_mask-32: %d", ret);
 			/*goto do_dis_dev;*/
 		}
@@ -379,7 +418,7 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 			pci_resource_len (pcidev, 2));
 	if (!ioaddr) {
 		simeth_err (probe, "Error ioremap-simethnet\n");
-		ret = -1;
+		ret = -ENOMEM;
 		goto do_rel_regions;
 	}
 
@@ -394,14 +433,11 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	adapter->ioaddr = ioaddr;
 
-	/* MAC Address */
-	for (i = 0; i < ETH_ALEN; i++) {
-		netdev->dev_addr[i] = (unsigned char)simeth_mac_byte (i);
+	/* get valid MAC Address or get out of here */
+
+	if (_simeth_get_valid_mac_addr (adapter) == 0) {
+		memcpy (adapter->netdev->dev_addr, adapter->mac_addr, ETH_ALEN);
 	}
-
-	netdev->features |= NETIF_F_RXCSUM |
-		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
-
 	_setup_ethtool_ops (netdev);
 
 	netif_napi_add (netdev, &adapter->napi, simeth_napi_rxpoll, SIMETH_NAPI_WEIGHT);
@@ -415,6 +451,25 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
         simeth_crit (probe, "Failed adapter_setup: %d\n", ret);
 		goto do_napi_del;
     }
+
+	_simeth_init_mdio_ops (adapter);
+
+	_simeth_init_hw (adapter);
+
+	_simeth_reset_hw (adapter);
+
+	/*setup hardware feature flags someday! -TODO*/
+	netdev->features = 0;
+	netdev->hw_features = 0;
+	netdev->vlan_features = 0;
+
+	/*set minimum and maximum mtu values for this netdev*/
+	netdev->min_mtu = ETH_ZLEN - ETH_HLEN;
+	netdev->max_mtu = MAX_JUMBO_FRAME_SIZE - ETH_HLEN - ETH_FCS_LEN;
+	if (netdev->vlan_features) { /*What?? -TODO*/
+		netdev->min_mtu -= VLAN_HLEN;
+		netdev->max_mtu -= VLAN_HLEN;
+	}
 
     ret = register_netdev (netdev);
     if (ret < 0) {
