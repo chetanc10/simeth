@@ -456,8 +456,6 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	_simeth_init_hw (adapter);
 
-	_simeth_reset_hw (adapter);
-
 	/*setup hardware feature flags someday! -TODO*/
 	netdev->features = 0;
 	netdev->hw_features = 0;
@@ -470,6 +468,14 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 		netdev->min_mtu -= VLAN_HLEN;
 		netdev->max_mtu -= VLAN_HLEN;
 	}
+
+	/*wake on lan settings? -TODO*/
+
+	/*other hw feature listing/setup/updates etc -TODO*/
+
+	_simeth_reset_hw (adapter);
+
+	/*strcpy (netdev->name, "eth%d"); // not valid anymore; udev decides netdev-names */
 
     ret = register_netdev (netdev);
     if (ret < 0) {
