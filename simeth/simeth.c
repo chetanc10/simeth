@@ -48,13 +48,13 @@
 #include <net/tc_act/tc_mirred.h>
 
 #include "simeth.h"
-#include "simeth_nic.h"
+#include "simeth_common.h"
 
 MODULE_AUTHOR ("ChetaN KS <chetan.kumar@gmail.com>");
 MODULE_DESCRIPTION ("SIMulated ETHernet driver using IVSHMEM on VM \
 		demonstrating simulated NIC engine on host userspace");
 MODULE_LICENSE ("GPL");
-MODULE_VERSION (SIMETH_VERSION);
+MODULE_VERSION (SIMETH_VER_0);
 
 #define MODULENAME "simeth"
 
@@ -68,8 +68,18 @@ static struct {
 	uint32_t msg_enable;
 } debugm = {(uint32_t)(-1)};
 /*allow user/others to rd/wr debug control*/
-module_param_named(debugm, debugm.msg_enable, int, 0660);
+module_param_named (debugm, debugm.msg_enable, int, 0660);
 MODULE_PARM_DESC (debugm, "Debug level (0=none,...,16=all)");
+
+/*Module parameter for Tx descriptor count per Tx queue*/
+static uint32_t g_n_txds = 64;
+module_param_named (g_n_txds, g_n_txds, int, 0660);
+MODULE_PARM_DESC (g_n_txds, "Per Queue Tx Descriptor count: 32-512, default 64; Must be aligned as per simeth.h");
+
+/*Module parameter for Rx descriptor count per Rx queue*/
+static uint32_t g_n_rxds = 64;
+module_param_named (g_n_rxds, g_n_rxds, int, 0660);
+MODULE_PARM_DESC (g_n_rxds, "Per Queue Rx Descriptor count: 32-512, default 64; Must be aligned as per simeth.h");
 
 typedef enum simeth_dev_region {
 	SIMETH_BAR_0 = 0,
@@ -80,22 +90,59 @@ typedef enum simeth_dev_region {
 	SIMETH_BAR_5 = 5,
 } simeth_dev_region_t;
 
-static struct pci_device_id simeth_dev_ids[] = {
+static const struct pci_device_id simeth_dev_ids[] = {
 	simeth_pci_dev_id (0x1af4, 0x1110, SIMETH_BAR_2),
 	{0,} /* sentinel */
 };
 
+int (*simeth_xmit_mac_fn) (struct sk_buff *skb);
+
+#define _simeth_clean_txq(a, q) _simeth_clean_q (a, q, 0)
+#define _simeth_clean_rxq(a, q) _simeth_clean_q (a, q, 1)
+static void _simeth_clean_q (simeth_adapter_t *adapter, simeth_q_t *q, int is_rxq);
+static void _simeth_clean_txqs (simeth_adapter_t *adapter);
+static void _simeth_clean_rxqs (simeth_adapter_t *adapter);
+
+static void _simeth_config_tx_engine (simeth_adapter_t *adapter, int q_idx);
+static void _simeth_config_rx_engine (simeth_adapter_t *adapter, int q_idx);
+static void _simeth_config_engines (simeth_adapter_t *adapter);
+
+static void _simeth_stop_sw (simeth_adapter_t *adapter);
+static void simeth_down (simeth_adapter_t *adapter);
+
+#define _simeth_setup_txq(a, q, nd) _simeth_setup_q (a, q, nd, 0)
+#define _simeth_setup_rxq(a, q, nd) _simeth_setup_q (a, q, nd, 1)
+static int _simeth_setup_q (simeth_adapter_t *adapter, simeth_q_t *q, uint32_t n_desc, int is_rxq);
+static int _simeth_setup_rxqs (simeth_adapter_t *adapter);
+static int _simeth_setup_txqs (simeth_adapter_t *adapter);
+
+static void _setup_ethtool_ops (struct net_device *netdev);
 
 static inline void _simeth_clean_adapter (simeth_adapter_t *adapter);
+static int _simeth_setup_adapter (simeth_adapter_t *adapter);
+
 static void _simeth_release_qs (simeth_adapter_t *adapter);
 static int _simeth_alloc_qs (simeth_adapter_t *adapter);
+
 static void __used _simeth_irq_enable (simeth_adapter_t *adapter);
 static void _simeth_irq_disable (simeth_adapter_t *adapter);
-static int _simeth_setup_adapter (simeth_adapter_t *adapter);
+
 static void _simeth_init_hw (simeth_adapter_t *adapter);
 static void _simeth_reset_hw (simeth_adapter_t *adapter);
 static void _simeth_init_mdio_ops (simeth_adapter_t *adapter);
 static int _simeth_get_valid_mac_addr (simeth_adapter_t *adapter);
+
+static void _simeth_adjust_descq_count (void);
+
+#if SIMETH_EN_DMA_MAPS
+#define _simeth_dma_map_skb(dev, va, sz, dir) \
+	dma_map_single ((dev), (va), (sz), (dir))
+#define _simeth_dma_unmap_skb(dev, dma, sz, dir) \
+	dma_unmap_single ((dev), (dma), (sz), (dir))
+#else
+#define _simeth_dma_map_skb(dev, va, sz, dir) virt_to_phys ((va))
+#define _simeth_dma_unmap_skb(dev, dma, sz, dir)
+#endif
 
 static inline void _simeth_clean_adapter (simeth_adapter_t *adapter)
 {
@@ -129,22 +176,256 @@ static int simeth_napi_rxpoll (struct napi_struct *napi, int budget)
 	return ret;
 }
 
-int (*simeth_xmit_mac_fn) (struct sk_buff *skb);
+static int _simeth_setup_q (simeth_adapter_t *adapter, simeth_q_t *q, uint32_t n_desc, int is_rxq)
+{
+	int ret = 0;
+	uint32_t size = 0;
+	struct pci_dev *pcidev = adapter->pcidev;
+	void *mem;
+
+	/*Clean this q first*/
+	memset (q, 0, sizeof (*q));
+
+	/*Allocate aligned buf holder ring*/
+	size = n_desc * (is_rxq ? sizeof (simeth_rx_buf_t) : \
+			sizeof (simeth_tx_buf_t));
+	mem = vzalloc (size);
+	if (unlikely (!mem)) {
+		simeth_err (drv, "%cxq->bring vzalloc failed", \
+				is_rxq?'r':'t');
+		return -ENOMEM;
+	}
+	q->bring_sz = size;
+	q->bring = mem;
+
+	/*Allocate aligned desc ring*/
+	size = n_desc * sizeof (simeth_desc_t);
+	size = ALIGN (size, PAGE_SIZE);
+	mem = dma_alloc_coherent (&pcidev->dev, \
+			size, &q->dring_dma_addr, GFP_KERNEL);
+	if (unlikely (!mem)) {
+		simeth_err (drv, "%cxq->dring dma_alloc_coherent failed", \
+				is_rxq?'r':'t');
+		vfree (q->bring);
+		return -ENOMEM;
+	}
+	q->dring_sz = size;
+	q->dring = mem;
+
+	/*If we need a 32K/64K boundary check, do it later -XXX*/
+
+	q->n_desc = n_desc;
+
+	return ret;
+}
+
+static int _simeth_setup_rxqs (simeth_adapter_t *adapter)
+{
+	int i, ret = 0;
+	simeth_rxq_t *rxq = adapter->rxq;
+
+	for (i = 0; i < adapter->n_rxqs; i++) {
+		ret = _simeth_setup_rxq (adapter, rxq + i, g_n_rxds);
+		if (unlikely (ret)) {
+			for (; i; i--) {
+				_simeth_clean_rxq (adapter, rxq + i);
+			}
+			break;
+		}
+	}
+
+	return ret;
+}
+
+static int _simeth_setup_txqs (simeth_adapter_t *adapter)
+{
+	int i, ret = 0;
+	simeth_txq_t *txq = adapter->txq;
+
+	for (i = 0; i < adapter->n_txqs; i++) {
+		ret = _simeth_setup_txq (adapter, txq + i, g_n_txds);
+		if (unlikely (ret)) {
+			for (; i; i--) {
+				_simeth_clean_txq (adapter, txq + i);
+			}
+			break;
+		}
+	}
+
+	return ret;
+}
+
+static void _simeth_config_tx_engine (simeth_adapter_t *adapter, int q_idx)
+{
+	simeth_txq_t *txq = adapter->txq;
+	dma_addr_t txd_base = txq->dring_dma_addr;
+
+	simeth_sym_void (txd_base);
+	/*TODO - configure engine*/
+}
+
+static void _simeth_config_rx_engine (simeth_adapter_t *adapter, int q_idx)
+{
+	simeth_rxq_t *rxq = adapter->rxq;
+	dma_addr_t rxd_base = rxq->dring_dma_addr;
+
+	simeth_sym_void (rxd_base);
+	/*TODO - configure engine*/
+}
+
+static void _simeth_config_engines (simeth_adapter_t *adapter)
+{
+	int i;
+
+	for (i = 0; i < adapter->n_txqs; i++) {
+		_simeth_config_tx_engine (adapter, i);
+	}
+	for (i = 0; i < adapter->n_rxqs; i++) {
+		_simeth_config_rx_engine (adapter, i);
+	}
+}
 
 static int simeth_ndo_open (struct net_device	*netdev)
 {
+	int ret = 0;
 	simeth_adapter_t *adapter = netdev_priv (netdev);
+
 	simeth_info (probe, "%s\n", __func__);
+
+	/*pm_runtime_get_sync (&pdev->dev);// What am I doing here? -TODO */
+
+	/*netif_carrier_off(netdev);*/
+
+	ret = _simeth_setup_txqs (adapter);
+	if (ret) {
+		simeth_err (drv, "_simeth_setup_txqs failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = _simeth_setup_rxqs (adapter);
+	if (ret) {
+		simeth_err (drv, "_simeth_setup_rxqs failed: %d\n", ret);
+		goto do_rel_txqs;
+	}
+
+	/*full-power up the phy -TODO*/
+
+	_simeth_config_engines (adapter);
+
 	napi_enable (&adapter->napi);
+
     return 0;
+
+do_rel_txqs:
+	_simeth_clean_txqs (adapter);
+    return ret;
+}
+
+static void __used _simeth_rel_tx_buf (simeth_adapter_t *adapter, simeth_tx_buf_t *buf)
+{
+	if (buf->dma_addr) {
+		_simeth_dma_unmap_skb (&adapter->pcidev->dev, \
+				buf->dma_addr, buf->n_bytes, DMA_TO_DEVICE);
+		buf->dma_addr = 0;
+	}
+
+	if (buf->skb) {
+		dev_kfree_skb_any (buf->skb);
+		buf->skb = 0;
+	}
+}
+
+static void __used _simeth_rel_rx_buf (simeth_adapter_t *adapter, simeth_rx_buf_t *buf)
+{
+	if (buf->dma_addr) {
+		_simeth_dma_unmap_skb (&adapter->pcidev->dev, \
+				buf->dma_addr, buf->n_bytes, DMA_TO_DEVICE);
+		buf->dma_addr = 0;
+	}
+
+	if (buf->skb) {
+		dev_kfree_skb_any (buf->skb);
+		buf->skb = 0;
+	}
+}
+
+static void _simeth_clean_q (simeth_adapter_t *adapter, simeth_q_t *q, int is_rxq)
+{
+	void *buf = q->bring;
+	int i;
+
+	if (is_rxq) {
+		for (i = 0; i < q->n_desc; i++) {
+			_simeth_rel_rx_buf (adapter, buf + i);
+		}
+	} else {
+		for (i = 0; i < q->n_desc; i++) {
+			_simeth_rel_rx_buf (adapter, buf + i);
+		}
+	}
+}
+
+static void _simeth_clean_txqs (simeth_adapter_t *adapter)
+{
+	int i;
+	simeth_txq_t *txq = adapter->txq;
+
+	for (i = 0; i < adapter->n_txqs; i++) {
+		_simeth_clean_txq (adapter, txq + i);
+	}
+}
+
+static void _simeth_clean_rxqs (simeth_adapter_t *adapter)
+{
+	int i;
+	simeth_rxq_t *rxq = adapter->rxq;
+
+	for (i = 0; i < adapter->n_rxqs; i++) {
+		_simeth_clean_rxq (adapter, rxq + i);
+	}
+}
+
+static void _simeth_stop_sw (simeth_adapter_t *adapter)
+{
+	/*If tasklets/workqueues are set, cancel'em all -TODO*/
+}
+
+static void simeth_down (simeth_adapter_t *adapter)
+{
+	struct net_device *netdev = adapter->netdev;
+
+	/*netif_carrier_off (netdev);*/
+
+	/*Disable rx engine - write stop to rxctl -TODO*/
+
+	netif_tx_disable (netdev);
+
+	/*Disable tx engine -write stop to tcxtl -TODO*/
+	msleep (10);
+
+	/*napi_disable (&adapter->napi); -TODO might be buggy wrt simeth*/
+
+	_simeth_irq_disable (adapter);
+
+	_simeth_stop_sw (adapter);
+
+	_simeth_reset_hw (adapter);
+
+	_simeth_clean_txqs (adapter);
+	_simeth_clean_rxqs (adapter);
 }
 
 static int simeth_ndo_stop (struct net_device *netdev)
 {
 	int ret = 0;
 	simeth_adapter_t *adapter = netdev_priv (netdev);
+
 	simeth_info (drv, "%s\n", __func__);
+
+	simeth_down (adapter);
+
 	napi_disable (&adapter->napi);
+
     return ret;
 }
 
@@ -255,6 +536,16 @@ static void _simeth_release_qs (simeth_adapter_t *adapter)
 
 static int _simeth_alloc_qs (simeth_adapter_t *adapter)
 {
+	/*Only 1 txq/rxq supported*/
+	if (unlikely (adapter->n_txqs != 1)) {
+		simeth_crit (drv, "n_txqs(%d) != 1\n", adapter->n_txqs);
+		return -EINVAL;
+	}
+	if (unlikely (adapter->n_rxqs != 1)) {
+		simeth_crit (drv, "n_rxqs(%d) != 1\n", adapter->n_rxqs);
+		return -EINVAL;
+	}
+
 	adapter->txq = kcalloc (adapter->n_txqs, 
 			sizeof (simeth_txq_t), GFP_KERNEL);
 	if (!adapter->txq) {
@@ -340,6 +631,28 @@ static int _simeth_get_valid_mac_addr (simeth_adapter_t *adapter)
 	}
 }
 
+static void _simeth_adjust_descq_count (void)
+{
+	if (unlikely ((g_n_txds < 32) || (g_n_txds > 512))) {
+		pr_warn ("Param n_txds(%u) out of range(32 to 512). Defaulting to 64\n", g_n_txds);
+		g_n_txds = 64;
+	} else if (unlikely (g_n_txds % SIMETH_DESC_RING_ALIGNER)) {
+		uint32_t _adjust = g_n_txds - (g_n_txds % SIMETH_DESC_RING_ALIGNER);
+		pr_warn ("Param n_txds(%u) is not aligned to %lu. Rounding down to: %u\n", \
+				g_n_txds, SIMETH_DESC_RING_ALIGNER, _adjust);
+		g_n_txds =_adjust;
+	}
+	if (unlikely ((g_n_rxds < 32) || (g_n_rxds > 512))) {
+		pr_warn ("Param n_rxds(%u) out of range(32 to 512). Defaulting to 64\n", g_n_rxds);
+		g_n_rxds = 64;
+	} else if (unlikely (g_n_rxds % SIMETH_DESC_RING_ALIGNER)) {
+		uint32_t _adjust = g_n_rxds - (g_n_rxds % SIMETH_DESC_RING_ALIGNER);
+		pr_warn ("Param n_rxds(%u) is not aligned to %lu. Rounding down to: %u\n", \
+				g_n_rxds, SIMETH_DESC_RING_ALIGNER, _adjust);
+		g_n_rxds = _adjust;
+	}
+}
+
 static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 {
 	int ret = 0;
@@ -350,8 +663,10 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	if (netif_msg_drv(&debugm)) {
 		pr_info ("Probing %s Ethernet driver, Version %s\n", \
-				MODULENAME, SIMETH_VERSION);
+				MODULENAME, SIMETH_VER_0);
 	}
+
+	_simeth_adjust_descq_count ();
 
     netdev = alloc_etherdev (sizeof (*adapter));
     if (!netdev) {
@@ -434,7 +749,6 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 	adapter->ioaddr = ioaddr;
 
 	/* get valid MAC Address or get out of here */
-
 	if (_simeth_get_valid_mac_addr (adapter) == 0) {
 		memcpy (adapter->netdev->dev_addr, adapter->mac_addr, ETH_ALEN);
 	}
@@ -482,6 +796,9 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
         simeth_crit (probe, "Failed register-netdev, ret: %d\n", ret);
 		goto do_clean_adapter;
     }
+
+	/*TODO- Disable carrier, we'll enable after ifup happens via open call*/
+	/*netif_carrier_off(netdev);*/
 
 	simeth_info (probe, "simeth setup done!");
 
