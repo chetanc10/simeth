@@ -14,27 +14,49 @@
 
 /* (S)IM(E)TH 32-bit (R)egister Set */
 
-/*Descriptor Q management registers*/
-#define SER_DQ_TYPE                0x0000 /*RO - type of desc q*/
-#define SER_DQ_SZ                  0x0001 /*RW - number of descs per q*/
-#define SER_DQ_HEAD                0x0010 /*RW - desc head to be used to fill in*/
-#define SER_DQ_TAIL                0x0020 /*RW - desc tail to be used to check last processed descriptor*/
-#define SER_DQ_AVL                 0x0030 /*RO - Basically diff between Q HEAD and TAIL, to check number of available descs */
+/*simeth device statistics RO only for driver!!!*/
+#define SER_TX_STATS               0x0000 /*Full struct of tx-stats as below, TXB: bytes, TXP: packets*/
+#define SER_TX_STATS_PKT_ALL       0x0000
+#define SER_TX_STATS_PKT_SENT      0x0008
+#define SER_TX_STATS_PKT_ERR       0x0010
+#define SER_TX_STATS_BYTES         0x0018
+#define SER_RX_STATS               0x0020 /*Full struct of rx-stats as below, RXB: bytes, RXP: packets*/
+#define SER_RX_STATS_PKT_ALL       0x0020
+#define SER_RX_STATS_PKT_SENT      0x0028
+#define SER_RX_STATS_PKT_ERR       0x0030
+#define SER_RX_STATS_BYTES         0x0038
 
-/*Descriptor Q status and statistics registers*/
-#define SER_DQ_TX_PKT_CNT          0x0000 /*RO - tx packet count on selected Q*/
-#define SER_DQ_TX_ERR_CNT          0x0000 /*RO - tx error count on selected Q*/
-#define SER_DQ_TX_BYTE_CNT         0x0000 /*RO - tx byte count on selected Q*/
+/*descriptor queue management*/
+#define SER_TX_DRING_BASE          0x0100/*tx desc register set base-offset*/
+#define SER_TX_DRING_PA            0x0100
+#define SER_TX_DRING_PA_L          0x0100
+#define SER_TX_DRING_PA_H          0x0104
+#define SER_TX_DRING_SZ            0x0108
+#define SER_TX_DRING_CTRL          0x0110
+#define SER_TX_DRING_ST            0x0114
 
-#define SER_DQ_RX_PKT_CNT          0x0000 /*RO - rx packet count on selected Q*/
-#define SER_DQ_RX_ERR_CNT          0x0000 /*RO - rx error count on selected Q*/
-#define SER_DQ_RX_BYTE_CNT         0x0000 /*RO - rx byte count on selected Q*/
+#define SER_RX_DRING_BASE          0x0200/*rx desc register set base-offset*/
+#define SER_RX_DRING_PA            0x0200
+#define SER_RX_DRING_PA_L          0x0200
+#define SER_RX_DRING_PA_H          0x0204
+#define SER_RX_DRING_SZ            0x0208
+#define SER_RX_DRING_CTRL          0x0210
+#define SER_RX_DRING_ST            0x0214
 
+/*descq ctrl/status flags*/
+#define SER_DRING_EN               0x0001
+#define SER_DRING_RST              0x0002
+#define SER_DRING_EN               0x0001
+
+/*desc options*/
+#define SER_DF_SOP                 (1 << 12)
+#define SER_DF_EOP                 (1 << 13)
+#define SER_DF_FRAG_CNT(n)         (((n) & 0xf) << 16)
 /* Descriptor structure */
 typedef struct simeth_desc {
 	uint32_t            buf_pa_hi;
 	uint32_t            buf_pa_lo;
-	uint32_t            opts1; /*len: 0-14, sop: 15, spread: 16-19, rsvd: 20-31*/
+	uint32_t            opts1; /*len: 0-11, sop: 12, eop: 13, rsvd: 14-15, frags: 16-19, rsvd: 21-31*/
 	uint32_t            opts2; /*rsvd*/
 } simeth_desc_t;
 
