@@ -156,8 +156,8 @@ static void simeth_remove (struct pci_dev *pcidev)
 
 	simeth_info (drv, "%s\n", __func__);
 
-	netif_napi_del (&adapter->napi);
     unregister_netdev (netdev);
+	netif_napi_del (&adapter->napi);
 	simeth_release (iounmap, adapter->ioaddr);
 	_simeth_clean_adapter (adapter);
     free_netdev (netdev);
@@ -403,7 +403,7 @@ static void simeth_down (simeth_adapter_t *adapter)
 	/*Disable tx engine -write stop to tcxtl -TODO*/
 	msleep (10);
 
-	/*napi_disable (&adapter->napi); -TODO might be buggy wrt simeth*/
+	napi_disable (&adapter->napi);
 
 	_simeth_irq_disable (adapter);
 
@@ -423,8 +423,6 @@ static int simeth_ndo_stop (struct net_device *netdev)
 	simeth_info (drv, "%s\n", __func__);
 
 	simeth_down (adapter);
-
-	napi_disable (&adapter->napi);
 
     return ret;
 }
