@@ -285,7 +285,7 @@ static void _simeth_config_engines (simeth_adapter_t *adapter)
 	}
 }
 
-static int simeth_ndo_open (struct net_device	*netdev)
+static int simeth_ndo_open (struct net_device *netdev)
 {
 	int ret = 0;
 	simeth_adapter_t *adapter = netdev_priv (netdev);
@@ -294,7 +294,7 @@ static int simeth_ndo_open (struct net_device	*netdev)
 
 	/*pm_runtime_get_sync (&pdev->dev);// What am I doing here? -TODO */
 
-	/*netif_carrier_off(netdev);*/
+	netif_carrier_off(netdev);
 
 	ret = _simeth_setup_txqs (adapter);
 	if (ret) {
@@ -313,6 +313,8 @@ static int simeth_ndo_open (struct net_device	*netdev)
 	_simeth_config_engines (adapter);
 
 	napi_enable (&adapter->napi);
+
+	netif_carrier_on(netdev); /*TODO-get a hang of carrier apis!*/
 
     return 0;
 
@@ -394,7 +396,7 @@ static void simeth_down (simeth_adapter_t *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
 
-	/*netif_carrier_off (netdev);*/
+	netif_carrier_off (netdev);
 
 	/*Disable rx engine - write stop to rxctl -TODO*/
 
@@ -796,7 +798,7 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
     }
 
 	/*TODO- Disable carrier, we'll enable after ifup happens via open call*/
-	/*netif_carrier_off(netdev);*/
+	netif_carrier_off(netdev);
 
 	simeth_info (probe, "simeth setup done!");
 
