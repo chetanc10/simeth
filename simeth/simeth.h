@@ -4,6 +4,7 @@
 
 #include <linux/types.h>
 #include <linux/list.h>
+#include <linux/timer.h>
 #include <linux/u64_stats_sync.h>
 #include <linux/netdevice.h>
 
@@ -150,6 +151,11 @@ typedef struct simeth_adapter {
 	uint32_t            n_rxqs;
 	simeth_q_t          *txq;
 	simeth_q_t          *rxq;
+
+	/* since irq's a bit out of coverage from ivshmem-qemu initially,
+	 * we use timer to emulate interrupt during inital dev stages */
+#define SIMETH_RXTIMER_TMO     (500) /*What is this value? -FIXME*/
+	struct timer_list   rxtimer;
 
 	/*simeth_stats_t      drv_tx_stats;*/
 	/*simeth_stats_t      drv_rx_stats;*/

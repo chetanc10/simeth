@@ -13,13 +13,11 @@
  * Author:   ChetaN KS (chetan.kumarsanga@gmail.com)
  */
 
-#include <linux/types.h>
 #include <linux/pci-aspm.h>
 #include <linux/module.h>
 #include <linux/compiler.h>
 #include <linux/pci.h>
 #include <linux/net.h>
-#include <linux/netdevice.h>
 #include <linux/netdev_features.h>
 #include <linux/if_ether.h>
 #include <linux/vmalloc.h>
@@ -81,6 +79,11 @@ static uint32_t g_n_rxds = 64;
 module_param_named (g_n_rxds, g_n_rxds, int, 0660);
 MODULE_PARM_DESC (g_n_rxds, "Per Queue Rx Descriptor count: 32-512, default 64; Must be aligned as per simeth.h");
 
+/*Module parameter to enable choosing either timer or actual irq based mechanism for rx-irq*/
+static uint32_t g_rx_irqtimer = 1; /*1 for timer, 0 for irq from device via ivshmem*/
+module_param_named (g_rx_irqtimer, g_rx_irqtimer, int, 0660);
+MODULE_PARM_DESC (g_rx_irqtimer, "Choose either 1 (for timer based) or 0 (for ivshmem-device-irq based) rx interrupt");
+
 typedef enum simeth_dev_region {
 	SIMETH_BAR_0 = 0,
 	SIMETH_BAR_1 = 1,
@@ -133,6 +136,10 @@ static void _simeth_init_mdio_ops (simeth_adapter_t *adapter);
 static int _simeth_get_valid_mac_addr (simeth_adapter_t *adapter);
 
 static void _simeth_adjust_descq_count (void);
+
+static void simeth_rxtimer_cb (unsigned long cookie);
+static int _simeth_setup_irqh (simeth_adapter_t *adapter);
+static void _simeth_destroy_irqh (simeth_adapter_t *adapter);
 
 #if SIMETH_EN_DMA_MAPS
 #define _simeth_dma_map_skb(dev, va, sz, dir) \
@@ -285,12 +292,88 @@ static void _simeth_config_engines (simeth_adapter_t *adapter)
 	}
 }
 
+static void simeth_rxtimer_cb (unsigned long cookie)
+{
+	simeth_adapter_t *adapter = (simeth_adapter_t *)cookie;
+
+	printk (KERN_ALERT "%s\n", __func__); /*Rename this print to simeth_dbg -TODO*/
+
+	/*schedule napi if possible, else reset timer for later scheduling*/
+	if (0/*TODO- remove 0'ing after confirming timer working*/ && \
+			napi_schedule_prep (&adapter->napi)) {
+		napi_schedule (&adapter->napi);
+	} else {
+		mod_timer (&adapter->rxtimer, jiffies + SIMETH_RXTIMER_TMO);
+	}
+}
+
+static irqreturn_t simeth_irqh (int irq, void *cookie)
+{
+	simeth_adapter_t *adapter = (simeth_adapter_t *)cookie;
+
+	if (irq != adapter->pcidev->irq) {
+		simeth_err (intr, "Invalid irqnum: %d. Expected: %d\n", \
+				irq, adapter->pcidev->irq);
+		return IRQ_NONE;
+	}
+
+	/*handle our irq. TODO*/
+	return IRQ_HANDLED;
+}
+
+static int _simeth_setup_irqh (simeth_adapter_t *adapter)
+{
+	int ret = 0;
+
+	switch (g_rx_irqtimer) {
+		case 0:
+			/*We use request_threaded_irq later once actual irq comes up*/
+			/*FIXME- Am I right here?*/
+			ret = request_irq (adapter->pcidev->irq, simeth_irqh, \
+					IRQF_SHARED, adapter->netdev->name, adapter);
+			if (ret) {
+				simeth_err (drv, "Couldn't setup irqh for irq: %d\n", \
+						adapter->pcidev->irq);
+			}
+			break;
+		case 1: /* go for timer based approach for rx irq, just simulation */
+			simeth_info (drv, "Using timer for rx-irq as g_rx_irqtimer==1\n");
+			setup_timer (&adapter->rxtimer, simeth_rxtimer_cb, (unsigned long)adapter);
+			mod_timer (&adapter->rxtimer, jiffies + SIMETH_RXTIMER_TMO);
+			break;
+		default:
+			simeth_crit (drv, "Invalid value for g_rx_irqtimer(%d). \
+					Valid values: 0(for timers) or 1(for ivshmem-device-irqs)\n");
+			ret = -EINVAL;
+			break;
+	}
+
+	return ret;
+}
+
+static void _simeth_destroy_irqh (simeth_adapter_t *adapter)
+{
+	switch (g_rx_irqtimer) {
+		case 0:
+			/*FIXME- Am I right here?*/
+			free_irq (adapter->pcidev->irq, adapter->netdev);
+			break;
+		case 1: /* go for timer based approach for rx irq, just simulation */
+			del_timer_sync (&adapter->rxtimer);
+			break;
+		default:
+			break;
+	}
+
+	return;
+}
+
 static int simeth_ndo_open (struct net_device *netdev)
 {
 	int ret = 0;
 	simeth_adapter_t *adapter = netdev_priv (netdev);
 
-	simeth_info (probe, "%s\n", __func__);
+	simeth_info (drv, "%s\n", __func__);
 
 	/*pm_runtime_get_sync (&pdev->dev);// What am I doing here? -TODO */
 
@@ -309,6 +392,8 @@ static int simeth_ndo_open (struct net_device *netdev)
 	}
 
 	/*full-power up the phy -TODO*/
+
+	_simeth_setup_irqh (adapter);
 
 	_simeth_config_engines (adapter);
 
@@ -397,6 +482,8 @@ static void simeth_down (simeth_adapter_t *adapter)
 	struct net_device *netdev = adapter->netdev;
 
 	netif_carrier_off (netdev);
+
+	_simeth_destroy_irqh (adapter);
 
 	/*Disable rx engine - write stop to rxctl -TODO*/
 
@@ -706,7 +793,7 @@ static int simeth_probe (struct pci_dev *pcidev, const struct pci_device_id *id)
 	}
 
 	if (pci_set_mwi (pcidev) < 0)
-		simeth_warn (probe, "pci_set_msi: unable to set MWI\n");
+		simeth_warn (probe, "pci_set_mwi: unable to set MWI\n");
 	if (!pci_is_pcie (pcidev))
 		simeth_notice (probe, "This's not PCIe!\n");
 
